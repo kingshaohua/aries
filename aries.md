@@ -100,7 +100,15 @@ Flexible buffer management.恢复机制不能太限制缓存管理所使用的�
 	
 Recovery independence。对于镜像拷贝（归档），介质恢复，在另一颗粒度（而不仅仅是在数据库层面）下进行重启恢复是有必要的。对于某个对象的恢复不应该阻碍另一个对象的恢复。Contrast this with what happens in the shadow page technique as implemented in System R, where index and space management information are recovered lock-step with user and catalog table (relation) data by starting from an internally consistent state of the whole database and redoing changes to all the related objects of the database simultaneously, as in normal processing.独立恢复意味着，在对象恢复期间，不可访问数据库中的对于这个对象的描述符合它涉及到的对象，由于真正被恢复的对象的对象可能在同时恢复，所以这两者之间可能不同步。在重启恢复时，最好能支持有选择的恢复，并能够推迟一些对象的恢复来加快重启速度，这同样适用于一些离线设备。面向页的恢复是指，由于进程down或者介质损坏所导致数据库中某一页的损坏，这个页可以单独恢复。因此，我们需要单独记录每个页的变化，即使所更新的对象横跨了多个页并且影响了多个页。结合在回滚时写入的CLR，介质恢复将变的非常容易（详见第8节）。这同样允许不同对象以不同频度单独进行镜像拷贝。
 	
-Logical undo. This relates to the ability, during undo, to affect a page that is different from the one modified during forward processing, as is needed in the earlier-mentioned context of the split by one transaction of an index page containing uncommitted data of another transaction。逻辑回退的可以支持高层的并发度，尤其当在查询结构中[57,59,62]。
+Logical undo. This relates to the ability, during undo, to affect a page that is different from the one modified during forward processing, as is needed in the earlier-mentioned context of the split by one transaction of an index page containing uncommitted data of another transaction。逻辑回退的可以支持高层的并发度，尤其当在查询结构中[57,59,62]。如果在回滚时不记录日志，考虑到recovery independence 和面向页的恢复，逻辑回退将会很难支持。System R and SQL/DS 支持逻辑回退，但是牺牲了recovery independence.
+
+Parallelism and fast recovery.随着多核变得越来越流行，大数据的支持也变得越发的重要。所以，该恢复机制在重启恢复或介质恢复的不同阶段都能提供并行恢复。这是恢复机制能快速执行的一个重要方面，实际上，这将会使用到*双机热备份*(a la IBM’s IMS/VS XRF [431 and Tandem’s NonStop [4, 371)。这意味redo流程（不管有没有可能），undo流程都必须是面向页的（System R and SQL/DS中对于索引和表空间管理的逻辑redo和undo也类似）。甚至在一个中断事务的undo流程还没做完之前，让备份系统执行一个新的事务也是可以的。这是很必要的，如果有一个很耗时的更新事务，它的回滚进程就需要花费很长的时间。
+
+Minimal overhead.我们的目标是在正常和恢复流程时都能有很高的性能。为了达到以上目标，恢复机制在虚拟存储和非易失存储中所造成的负载（日志数据卷，存储耗费等等）要尽量的小。相比于影子页技术所造成的空间负载，该目标同样暗示了我们需要减少在恢复过程中的脏页的数量。有一种想法是减少写回到物理存储的页数量继而减少了CPU的负载。这排除了一种恢复方法：首先undo那些已经写到物理存储上的变更，然后在redo它们（see,，e.g., [16, 21, 72, 78, 88])。同样排除了那些方法：操作并没有落地到物理存储上，因此undo也没必要(see, e.g., [41, 71, 881).。该方法也不能引起那些正在回滚事务的死锁。更进一步，如果在回滚时有嵌套回顾或者再次系统奔溃，由于有CLR的回退，CLR的记录不能导致无限制的日志记录。在触发检测点和镜像拷贝的时候，也不应该阻塞系统的其他活动。这类操作对系统的影响应尽可能的小。恰恰相反，System R上的检测点和镜像拷贝会引起系统其他部分较长的停顿。
+
+读到这里，读者会感觉到一些目标是相互矛盾的。基于不同开发人员对于现有系统功能以及IBM现有的事务系统的认知，并且与客户交流之后，我们会做出一些权衡。我们将会继续吸取那些原型和产品中的成功之处以及错误。
+
+
 
 
 
