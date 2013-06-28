@@ -14,5 +14,12 @@
 为了简单起见，对于系统崩溃在事务完成日志记录和在执行该事务的追加动作之间，我们不会讨论在redo遍历时如何redo这些残留的追加动作。  
 为了利用并行模型，脏页表中的信息可以使用异步IO来读取这些页，这样当redo遍历的时候遇到这些记录时，它们已经在缓存中了。Since updates performed during the redo pass are not logged, we can also perform sophisticated things like building in-memory queues of log records which potentially need to be reapplied (as dictated by the information in the dirty .pages table) on a per page or group of pages basis and, as the asynchronously initiated 1/0s complete and pages come into the buffer pool, processing the corresponding log record queues using multiple processes。这就要求每个队列只能由一个进程操作。对不同页的更新顺序可能和日志中记录的顺序不一样。这并不会丢失正确性，因为对于给定的页，所有丢失的更新都会与之前一致的顺序进行操作。这些并行的思想对于通过远程备份来进行灾难恢复同样适用。  
 **6.3 Undo遍历**  
-在重启恢复第三道遍历是undo遍历。图12描述了RESTART_UNDO例程是如何实现这些操作的。  
-![](./img/fig12.png)
+在重启恢复第三道遍历是undo遍历。图12描述了RESTART_UNDO例程是如何实现这些操作的。该例程的输入是重启的事务表。undo遍历不会参考脏页表。并且，由于在undo遍历初始化时，已经进行历史重演了，所以并不会参考页中的LSN来决定一个undo操作是否需要做。对比我们将会在10.1小节讨论的DB2系统，它并不会重演历史，但是会执行selective redo.  
+![](./img/fig12.png)  
+restart_undo例程在一个日志中以逆序的方式回滚了丢失了的事务。对于仍未完成undo的事务，连续获取其下一条待处理记录的最大LSN,直到没有丢失的事务需要处理。下一条待回滚处理的记录是由事务表决定的。处理日志记录的方式和之前在5.2节描述的一样。在回滚过程中，会写CRL。在遍历过程中，将脏页刷出到非易失存储上是，缓存管理模块遵循WAL协议。 
+利用并行性，可以用多进程来处理undo遍历。需要注意的是，由于CLR的UndoNxtLSN链，每个事务只能由一个进程完整处理。仍然有可能的是，先写了CLR，但没有对这些页进行undo(参加6.4节讨论了需要逻辑undo时遇到的问题)，然后如6.2节一样并行redo CLR。在这种模型下，实际对页的变更的undo操作可以并行执行，甚至在同一事务中也可以。  
+![](./img/fig13.png)  
+图13描述一种使用ARIES进行重启恢复的场景。在这里，多条日志记录更新了同一页。在系统崩溃前，在第二次更新时，数据页被刷到了磁盘上。在写完磁盘后，执行了一个部分回退（对记录4,3的undo）,接着事务继续执行(更新了5,6)。在重启恢复时，丢失的更新（3,4,4',3',5,6）会先redo，然后执行undo（6,5,2,1）。每一条日志记录会至少匹配一条CLR,不管执行多少次重启恢复。  
+使用ARIES，我们可以在重启恢复后继续已失败的事务。由于，ARIES重演了历史，并且支持savepoint，我们也可以在undo遍历的时候回滚这些失败的事务到最后一次savepoint,而不是全部回滚。接着，我们可以在某个特殊点触发其应用，并传入关于savepoint的信息来重启事务。想要正确的执行这些需要：(1)能够从事务未提交的日志记录（不是undo更新）中获取锁信息。(2)在完成恢复之前持有这些锁。(3)记录足够多的关于savepoint的信息，这样系统就能恢复游标位置，程序状态等等。  
+**6.4 Selective or Deferred Restart选择性或延迟重启**  
+有时候，当系统崩溃后，我们希望尽可能快的重启一个新事物。因此，我们希望能将恢复工作推迟到以后再做。当一些重要数据不可用时，通常也会这么做来节省时间。首先先恢复这些数据，然后开放系统来开启新事务。比如在DB2中，甚至允许在系统启动好之后，可以对一些离线的数据使用redo,undo来恢复。如果一些undo工作需要对离线数据上的丢失的事务来执行，那么DB2就会单独写CLR，并且结束该事务。这是有可能的，因为在事务正常执行时【15】CLR可以基于non-CLR记录单独生成。由于页(或者索引中的迷你页)，是锁的最小颗粒，undo操作是以原始操作的逆序执行的。也就是说DB2中没有逻辑undo.DB2在一个异常表（通常叫做数据库分配（DBA）表，保存在日志或者虚拟存储中）,记录在系统上线后，仍然待恢复的离线数据，在恢复之前它们不能被其他事务访问【14】。这些日志记录的LSN范围同样会记录下来。
