@@ -4,7 +4,10 @@ Data Base Technology Institute, IBM Almaden Research Center, San Jose, CA 95120,
 wharr@alnwden, tbm. com
 FRANK LEVINE
 IBM, 11400 Burnet Road, Austin, TX 78758, USA  
-摘要：本文提供了一种对于事务系统中索引管理的综合处理方案。这种方案叫做ARIES/IM(Algorlthm for Recovery and isolation Exploiting Semantics for Index Management),可以进行并发控制和B+树的恢复。ARIES/IM确保串行性并使用WAL来恢复。它支持高并发并且有性能优异：（1）将某个key上的锁视为数据页中相应记录的锁（比如在记录级别）（2）为了支持高并发，在提交时不获取索引页锁，即使这时候索引结构发生了变更（SMO）比如页分裂，页删除。（3）支持在遍历，插入，删除同时，进行SMO。在重启恢复时，对于索引变更的redo是以面向页的方式执行（比如，不需要遍历整个索引树），并且在正常执行和重启恢复时，不管有没有可能，undo都是以面向页的方式执行的。ARIES/IM使用多种级别的锁来保证灵活性。ARIES/IM的一个子集已经应用到0S/2 Extended Edition Database Manager。由于ARIES/IM的锁设计很通用，所以它们也被应用到SQL/DS和VM Shared File System，尽管这些系统使用影子页技术来恢复。  
+摘要：本文提供了一种对于事务系统中索引管理的综合处理方案。这种方案叫做ARIES/IM(Algorlthm for Recovery and isolation Exploiting Semantics for Index Management),可以进行并发控制和B+树的恢复。ARIES/IM确保串行性并使用WAL来恢复。它支持高并发并且有性能优异：（1）将某个key上的锁视为数据页中相应记录的锁（比如在记录级别）  
+（2）为了支持高并发，在提交时不获取索引页锁，即使这时候索引结构发生了变更（SMO）比如页分裂，页删除。  
+（3）支持在遍历，插入，删除同时，进行SMO。  
+在重启恢复时，对于索引变更的redo是以面向页的方式执行（比如，不需要遍历整个索引树），并且在正常执行和重启恢复时，不管有没有可能，undo都是以面向页的方式执行的。ARIES/IM使用多种级别的锁来保证灵活性。ARIES/IM的一个子集已经应用到0S/2 Extended Edition Database Manager。由于ARIES/IM的锁设计很通用，所以它们也被应用到SQL/DS和VM Shared File System，尽管这些系统使用影子页技术来恢复。  
 **1、介绍**  
 对B树及其变种的并发访问协议已经研究了好长时间(参见 [BaSc77, LeYa81, Mino84, Sagi86, ShGo88]及其它们所引用的一些文章）。这些论文中都没有考虑的如何保证事务的原子性和串行性，该事务包含了对B+树的多种操作（比如获取，插入，删除等）,当事务，系统，或者介质崩溃，并且被不同事务同时访问。[FuKa89]描述了一种错误的（比如：在not found的时候不完全锁，对于范围扫描时进行完全加锁）并且昂贵（使用嵌套事务）的方案来解决此类问题（详情参考[MoLe89]）。数据库管理系统（DBMS）比如[DB21,the 0S12 Extended Edition Database Managerl, System R,NonStop SQLt and SQUDS]的索引管理都支持串行化（重复读（RR）或者第三级别的一致性[Gray78]）。在恢复时，DB2, NonStop SQL 和  0S/2 Extended Edition Database Manager 使用日志先行（WAL）[Gray78,MHLPS92],而System R 和 SQL/DS使用影子页技术[GM BLL81]。不幸的是，上述系统所使用算法细节并没不公开。本文中，我们会描述一种并发控制及恢复策略，称为ARIES/IM（A/gorithm for Recovery and Isolation Exploiting Semantics forindex Management),来构建B+树索引。我们使用ARIES/IM作为0S/2 Extended Edition Database Manager设计的一部分。  
 首先，System R如何对索引加锁的大部分细节已经在[Moha90a]中详细描述，并且作为我们ARIES/KVL的一部分，用来改进该方法的并行度和加锁开销特性。除了提供低颗粒度锁（通过数据的记录锁和索引的key值锁），System R系统（起源于IBM的SQL/DS产品）锁提供的并发级别，客户并不满意的。由于，ARIES/KVL是在key值上加锁而不是在单独的key上加锁，所以ARIES/KVL对于增强并发度仍然不够。后者在非唯一性索引上有重大改进。此外，在System R中，即使是对单条记录的插入或删除所要获取的锁数量也是相当多的。因此在设计ARIES/IM是，我们的首要目标是修改System R算法，使其使用WAL，并且彻底提升了它的并发度，性能和功能特性。需要通过高效的恢复和存储以及高并发来支持串行执行。ARIES/IM可以满足所有这些要求。  
@@ -36,3 +39,13 @@ ARIES/IM支持4中基本的索引操作：
 在ARIES中，系统崩溃后重启恢复包含三次日志遍历：analysis,redo,undo。第一次日志扫描，从上一次完成的checkpoint开始到日志结束。analysis遍历决定下一次日志扫描的起始点。它同样会提供in-flight和in-doubt状态的事务列表。在redo遍历时，ARIES使用日志重演来redo那些磁盘上的日志更新（这些更新之前已经更新到数据页上但是没有落地到磁盘中）。对于所有事务都这么处理，包括那些in-flight的事务。redo遍历同样会获取一些锁来保护那些in-doubt事务中未提交的更新。  
 接下来的遍历是undo遍历，这时所有in-flight的事务的更新都会回滚（在单一日志文件范围内，以逆序方式回滚）。除了在事务正常执行时记录日志，ARIES同样也会记录（通常使用补偿日志，CLR）那些在部分或者回滚事务中的更新操作。CLR有一个属性：他们都是redo-only日志。通过将CLR和正常执行的日志记录串连起来，回滚所需的日志量就固定了（即使在重启恢复时重复崩溃或者嵌套回滚）。当对一条日志（nonCLR）进行undo时，会生成一条CLR，（通过CLR的UndoNxtLSN字段）该CLR会指向这条undo日志的前继。  
 有时候我们希望事务中的一些更新肯定要被提交，不管该事务有没有提交。我们仍需要这些操作的原子性。对于某些情况下很实用：本文接下来会提到的索引页的分裂和删除，以及在hash存储模型中的记录重定向[Moha92]。ARIES通过内嵌顶级动作来支持这一特性。预期的效果是在内嵌顶级动作结束时生成虚拟CLR（参见图9）。虚拟CLR的UndoNxtLSN记录了开始内嵌顶级动作前一条日志记录，如果事务在完成内嵌顶级动作之后准备回滚。ARIES的历史重演特性保证了内嵌顶级动作可以redo，如果有需要的话，在系统崩溃后，即使他们已经在in-flight事务中生效了。如果系统在生成虚拟CLR之前崩溃，那么这个不完整的内嵌顶级动作就会被undo，通过记录在undo-redo(对应于redo-only)日志记录中内嵌顶级动作的日志来undo。这提供了内嵌顶级动作本身的原子属性。  
+**2.Concurrency Control in ARIES/IM**  
+本节中，我们会描述ARIES/IM一些特性，用在并行控制方面的。首先我们会给出一个大体上的概述，然后在详细论述不同索引操作下的特性。ARIES/IM的这些特性是为了能在恢复时正确执行（在第三节有描述）。系统恢复会要求在并行执行一些特定操作时添加一些限制。详细请参考[MoLe89].  
+**2.1. Overview oJLocking and Latching**  
+如图2所示，总结了不同操作下所需要的锁。  
+![](./img/fig2.png)  
+ARIES/IM支持高度的并发以及良好的性能：    
+（1）将某个key上的锁视为数据页中相应记录的锁（比如在记录级别）  
+（2）为了支持高并发，在提交时不获取索引页锁，即使这时候索引结构发生了变更（SMO）比如页分裂，页删除。  
+（3）支持在遍历，插入，删除同时，进行SMO。  
+ARIES/IM通过锁住一条记录来锁住key(这条记录的record id在这个key中，或者数据页ID--record id的一部分，如果锁颗粒度是页级别的)。
