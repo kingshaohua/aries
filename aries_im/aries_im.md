@@ -140,7 +140,15 @@ Restart Undo Considerations：为了确保在重启回滚是，在索引树中�
 
 一旦dummy CLR（以为着SMO已经完成）写入到日志缓存中，就可以释放树 x latch。ARIES/IM同样用树latch来同步，在某些情况下，在同一颗树上会有不同的事务执行key插入，key删除，SMO。这种理念使得不同事务对同一索引树的增删操作的日志可以和SMO的日志并行记录，并且，后者不会影响前者操作（key的增删）的正确性，或者由于系统崩溃所导致的后续undo操作。为了更进一步解释，我们会接下里讨论逻辑undo的必要性。  
 
+如果在t1时刻执行的操作需要在t2时刻undo，那么在undo的时候，需要遍历索引树（就是逻辑undo）,只有面向页的undo才可以不这么做：  
+（1）在undo一个删除key操作时，但是没有空闲空间，因此就需要SMO来分裂页（比如：删除key所空闲出的空间，被t1,t2时刻间的其他事务的插入所使用了）  
+（2）key并不属于原来的页：在对插入key的undo时，key已经不在该页中了（由于SMO的分裂操作的介入），在删除key的undo时，原始页不再是叶子页了（由于SMO的页删除的介入）  
+（3）关于key是否还属于原来的页并不确定：对于删除key的undo情况-原始页仍然是一个叶子页但是归还的key并不在那一页的范围内（范围指的是在该页上有比当前key更大和更小的key）。  
+（4）undo导致原始的页变成空页，因此就需要页删除的SMO：插入key的undo时，由于在原始插入时，该页上至少有一个其他的key（页分裂逻辑可以保证这一点），这意味着在t1,t2时刻会有一个对边界key的删除。  
 
+如果一个页在t1时刻执行了一次操作可能会导致以上四种在t2时刻undo的问题，那么对于该页做任何操作时（在t1,t2时刻之间）需要执行一个预防操作，因此强制要求先前日志的undo在重启undo的时候重新遍历树。图11描述了这样一个场景：在T2插入到P6时，接着，T1在P6上删除，T2就需要采取预防措施这样，如果T1在P6上的删除在后来回滚了，接着T1就需要执行一次逻辑undo,这样T1就不会遇到索引树不一致的问题，因为它不会直接访问其叶子节点。预防步骤首先确保到达了point of structural consistency (POSC），通过在执行操作前加树s latch（比如，T2在执行它对P6上的插入前建立了POSC，并使用了T1是否的空闲空间）。这就确保了，如果系统崩溃了，在undo遍历的时候会到达POSC（如果有需要的话），树就肯定是一致的了。只有当一些在POSC之前的事务需要回滚时，undo遍历才会访问POSC之前的部分日志。  
+
+即使要增删的key的叶子节点与未完成的SMO无关（比如，该叶子页上的SM_Bit为‘0’），这样的操作可能会被延迟。如果SMO在树中的其他地方传播，直到SMO完成（参见图11对这个问题的图示说明）。这种延迟是有必要的，只有当系统崩溃在增删key完成之后，并且在增删事务提交之前，这会导致在undo增删时从索引树根遍历。在这些情况下，需要保证索引树是一致的，并且可以遍历。We call as the region of structural hcomktency (ROSI) that portion of the log from the point at which the first SMO related log record is written (indicated by the symbol [) to the point at which the dummy CLR for that SMO is written (indicated by the symbol ]).在这个区间内，如果有其他事务对索引操作需要写日志记录下来，然后我们要确保，这些操作可以以面向页的方式undo。如果我们不能确保是否需要逻辑undo，在系统恰好崩溃在执行该动作，并日志记录下来了，那么我们就需要延迟该操作，等到ROSI结束并建立一个POSC。  
 
 
 
