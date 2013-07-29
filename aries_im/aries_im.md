@@ -150,6 +150,16 @@ Restart Undo Considerations：为了确保在重启回滚是，在索引树中�
 
 即使要增删的key的叶子节点与未完成的SMO无关（比如，该叶子页上的SM_Bit为‘0’），这样的操作可能会被延迟。如果SMO在树中的其他地方传播，直到SMO完成（参见图11对这个问题的图示说明）。这种延迟是有必要的，只有当系统崩溃在增删key完成之后，并且在增删事务提交之前，这会导致在undo增删时从索引树根遍历。在这些情况下，需要保证索引树是一致的，并且可以遍历。We call as the region of structural hcomktency (ROSI) that portion of the log from the point at which the first SMO related log record is written (indicated by the symbol [) to the point at which the dummy CLR for that SMO is written (indicated by the symbol ]).在这个区间内，如果有其他事务对索引操作需要写日志记录下来，然后我们要确保，这些操作可以以面向页的方式undo。如果我们不能确保是否需要逻辑undo，在系统恰好崩溃在执行该动作，并日志记录下来了，那么我们就需要延迟该操作，等到ROSI结束并建立一个POSC。  
 
-考虑到上述四种的(重启时需要undo遍历索引树)第一种情况,ARIES/IM在每页上使用一个bit位，叫做Delete_Bit。如果该bit被某事务设置成‘1’，并对叶子页执行key删除（参见图7）。
+考虑到上述四种的(重启时需要undo遍历索引树)第一种情况,ARIES/IM在每页上使用一个bit位，叫做Delete_Bit。如果该bit被某事务设置成‘1’，并对叶子页执行key删除（参见图7）。当尝试往一个Delete_Bit为‘1’的叶子页插入key是，ARIES/IM首先确保在插入之前没有SMO(参见图6)。在图11的例子中，T2意识到Delete_Bit是‘1’，因此在重置Delete_Bit为‘0’前，会先建立一个POSC，然后在执行插入。这样，在T2提交之后系统崩溃了，然后T1需要回滚，由于T2建立的POSC，于是防止T1进入不一致树的状态。另一种方案是：使用一个类似于Delete_Bit来标识上述的状态,只有当整个树中没有SMO操作时，才可以执行delete(并记录日志)。我们并没有选择这样做，因为这会导致很多不必要的同步和降低并发性。不必要的同步所花费的时间将更为显著，需要使用树锁而不是树latch,这样才能保证SMO的并行性（参见第5节 总结）。获取和释放latch需要消耗10几个指令，而获取和释放锁需要消耗上百个指令，即使在没有冲突的时候。如果树latch变成全局范围的锁，在共享磁盘环境中会更加糟糕，会消耗上千个指令。  
+
+对于树遍历的第二种情况不会导致任何问题。这是因为，在t1和t2之间，SMO（页分裂或者页删除）必须要以支持逻辑undo的方式执行，这样即使在T1中执行的动作是在ROSI中，紧接着就会建立一个POSC，在执行逻辑undo导致的SMO之前。可以建立POSC的原因是，使用X树latch来串行化SMO。  
+
+对于树遍历的第三种情况，ARIES/IM需要确保，在删除（并日志记录）一个边界key（页中的最大或最小key）之前,在树中没有正在执行的更高的SMO（这会使得如果系统崩溃，从root将无法访问到其叶子节点）。它在删除边界key之前会构建一个POSC(参见图7)。更近一步，它会避免在ROSI期间记录这种删除日志，通过一直持有S树latch，直到删除操作完成。  
+
+对于树遍历的第四种情况，也不会导致问题，因为之前提到的，在t1,t2直接，对于边界key的删除已经发生了。按照上述的逻辑，删除边界key，会在t1,t2之间建立一个POSC。  
+
+需要注意的是，通常对于树latch的持有者，在持有latch阶段不会进行IO操作，因此持有latch的时间间隔其实很短。  
+
+
 
 
