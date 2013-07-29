@@ -150,6 +150,6 @@ Restart Undo Considerations：为了确保在重启回滚是，在索引树中�
 
 即使要增删的key的叶子节点与未完成的SMO无关（比如，该叶子页上的SM_Bit为‘0’），这样的操作可能会被延迟。如果SMO在树中的其他地方传播，直到SMO完成（参见图11对这个问题的图示说明）。这种延迟是有必要的，只有当系统崩溃在增删key完成之后，并且在增删事务提交之前，这会导致在undo增删时从索引树根遍历。在这些情况下，需要保证索引树是一致的，并且可以遍历。We call as the region of structural hcomktency (ROSI) that portion of the log from the point at which the first SMO related log record is written (indicated by the symbol [) to the point at which the dummy CLR for that SMO is written (indicated by the symbol ]).在这个区间内，如果有其他事务对索引操作需要写日志记录下来，然后我们要确保，这些操作可以以面向页的方式undo。如果我们不能确保是否需要逻辑undo，在系统恰好崩溃在执行该动作，并日志记录下来了，那么我们就需要延迟该操作，等到ROSI结束并建立一个POSC。  
 
-
+考虑到上述四种的(重启时需要undo遍历索引树)第一种情况,ARIES/IM在每页上使用一个bit位，叫做Delete_Bit。如果该bit被某事务设置成‘1’，并对叶子页执行key删除（参见图7）。
 
 
