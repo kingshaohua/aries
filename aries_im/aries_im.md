@@ -163,4 +163,21 @@ Restart Undo Considerations：为了确保在重启回滚是，在索引树中�
 **4. Deadlocks**  
 获取latch所遵循的协议确保了在latch方面不会产生死锁。尽管，大多数时候，持有了某个索引页上的latch，然后又无条件的申请另一个索引页上的latch，因为是按层级顺序获取latch，所以不会发生死锁（获取父latch后才能再申请子latch,或者获取叶子latch然后获取下一个叶子latch）。即使在叶子级别的操作（页分裂或者页删除）已经在树中传播，非叶子页的latch，只有在叶子页上的latch释放后才能获取。当持有一个或者多个latch时，就不能无条件的获取锁。所以，如果持有latch时，就不会有锁等待。
 
+这样做的结果就是，树latch永远不会引起死锁。所以，树latch的持有者可以等对叶子页的操作传播到整个树中。持有树latch时，不可以无条件的获取锁。这些latch的持有者推延自己，这样就不用等待任何锁或者树latch。回滚事务不会触发死锁是因为:  
+（1）不需要获取锁。  
+（2）只有在访问页时才需要获取latch。
+有一个例外可能会要获取树latch：如果需要执行逻辑undo的话。由于latch不会触发死锁，那么回滚也不会触发死锁。  
 
+**5. Conclusions**  
+与System R的协议相比，ARIES/IM通过下列方式获得了高并发以及高性能：  
+（1）对单独的key加锁而不是key值加锁。  
+（2）对页加latch而不是加锁，并且更短的持有latch并且避免死锁。  
+ARIES/IM通过只对数据加锁而不是对索引加锁来减少对单条记录操作时加锁个数。0S/2 Extended Edition Database Manager实现了ARIES/IM的子集。ARIES/IM的一些功能也被合并到SQUDS V2R2 和 V2R3，以及VM’S Shared File System（使用System R协议）中。ARIES/IM支持面向页的介质恢复--比如，可以对索引归档，如果在读取页的时候出了问题（比如，在写该页的时候发生了崩溃），那么可以从最近一次归档中重新装载该页，然后通过日志向前卷，那么该页可以恢复到最近的状态。关于介质的恢复，以及延迟重启等等在[MHLPS92]中有详细解释。  
+
+先前提到的，通过对树加x latch来串行化SMO仅仅是为了描述方便。可以将树latch变树锁就能允许并行SMO。这锁是必须的，如果允许并行执行SMO的话，就可能会发生死锁。由于latch死锁不会发生，所以没法检测latch死锁。改变成锁之后，在叶子页执行SMO的同时，事务可以以IX态获取树锁。如果是一个非叶子节点的SMO，他们会更新IX锁为X锁（这么提升可能会导致死锁，因为两个事务可能会尝试同时提升锁）。为了避免回滚事务触发死锁，这类事务会获取X树锁，即使他们正在执行叶子节点的SMO。  
+
+**Acknowledgements** 
+Our thanks go to Luis-Felipe Cabrera,
+Don Haderle, Rajiv Jauhari, Sharad Mehrotra, Inderpal
+Narang, Rajeev Rastogi and Avi Silberschatz for their comments
+on earlier versions of this paper.
