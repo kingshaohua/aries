@@ -1,10 +1,12 @@
-ARIES/IM:基于WAL的一种高效高并发的索引管理方法  
-C. MOHAN
-Data Base Technology Institute, IBM Almaden Research Center, San Jose, CA 95120, USA
-wharr@alnwden, tbm. com
-FRANK LEVINE
+# ARIES/IM:基于WAL的一种高效高并发的索引管理方法 #
+C. MOHAN  
+Data Base Technology Institute, IBM Almaden Research Center, San Jose, CA 95120, USA  
+wharr@alnwden, tbm. com  
+FRANK LEVINE  
 IBM, 11400 Burnet Road, Austin, TX 78758, USA  
-摘要：本文提供了一种对于事务系统中索引管理的综合处理方案。这种方案叫做ARIES/IM(Algorlthm for Recovery and isolation Exploiting Semantics for Index Management),可以进行并发控制和B+树的恢复。ARIES/IM确保串行性并使用WAL来恢复。它支持高并发并且有性能优异：（1）将某个key上的锁视为数据页中相应记录的锁（比如在记录级别）  
+
+摘要：本文提供了一种对于事务系统中索引管理的综合处理方案。这种方案叫做ARIES/IM(Algorlthm for Recovery and isolation Exploiting Semantics for Index Management),可以进行并发控制和B+树的恢复。ARIES/IM确保串行性并使用WAL来恢复。它支持高并发并且有性能优异：  
+（1）将某个key上的锁视为数据页中相应记录的锁（比如在记录级别）  
 （2）为了支持高并发，在提交时不获取索引页锁，即使这时候索引结构发生了变更（SMO）比如页分裂，页删除。  
 （3）支持在遍历，插入，删除同时，进行SMO。  
 
@@ -42,7 +44,7 @@ ARIES/IM支持4中基本的索引操作：
 （10）如何保证在唯一性索引上，如果一个事务删除了一个key值，在这个事务提交前，其他事务不可以使用该key值。  
 （11）如何使的树的遍历能够持续进行，即使正在执行SMO，并且能够确保该遍历的事务可以恢复，(这些事务涉及到了SMO影响的页)参见图3，描述了该场景。  
 
-**1.2ARIES**  
+**1.2 ARIES**  
 在本一小节中，我们会简略的介绍一下ARIES恢复策略。读者可以参考[MHLPS92]，其中有对ARIES的详细描述，[MoPi91]对ARIES的实现方法做了一些优化，[MoNa91]正对ARIES在共享磁盘环境下做了增强，[RoM089]描述了ARIES/NT,这是对嵌套事务模型的ARIES的扩展。我们假设读者对以下概念已经有所了解：latch，不同级别的一致性（重复读，游标稳定性），不同阶段（tnstant,提交）以及不同的latch,锁模型，这些在[Gray78, MHLPS92, Moha90a, Moha90b]中有详细描述。  
 
 在ARIES中，每个数据页都有一个page_LSN字段包含日志记录的LSN，用它来描述最近一次对页做的更新。由于LSN随着时间递增，通过比较恢复时刻的page_LSN和日志记录的LSN，我们就可以确定该条日志是否已经在该页上生效。也就是说，如果page_LSN比日志记录的LSN小，那么后者就还没有在该数据页上生效。ARIES在页上使用latch来保证相关信息的物理一致性，在数据上用锁来保证逻辑一致性。ARIES支持低颗粒度锁（比如记录锁），以及富语义的锁模型（比如，自增/自减锁），部分回滚，嵌套事务，日志先行，选择和延迟重启，模糊进行备份（日志归档），介质恢复，强制和非强制缓存管理策略。  
@@ -115,7 +117,7 @@ Structure Modification Operations。如果需要SMO（页分裂或删除），�
 ![](./img/fig8.png)  
 
 **2.6. Discussion**  
-在本小节中，我们会解释在不同的叶级别的操作在锁方面的不同。insert和delete对next key加锁阶段的不对称性（instant vs commit）是由于未提交的insert是可见的，key一旦插入就存于索引了，然而，key一旦删除就不可见了。所以，一旦key处于未提交的删除态，我们就要对还存在的key加上锁告诉其他事务这边有一个未提交的删除（比如，在获取锁上的冲突）。The lock has to be strong enough to prevent others from building a wall behind the tripping point such that the wail hides the tripping point from the point of deletion。构建这样一堵墙，使得其他事务得知该key并不存在，但实际上该key仍然处于未提交的删除态，并且该删除可以随时回滚。在插入时，新插入的key作为一个跳跃点，然后对删除而言，跳跃点得是一个稳定的节点（不会被其他事务删除）。读者现在应该意识到是怎么一回事了，[Moha90a]中有很多关于此的例子的讨论。  
+在本小节中，我们会解释在不同的叶级别的操作在锁方面的不同。insert和delete对next key加锁阶段的不对称性（instant vs commit）是由于未提交的insert是可见的，key一旦插入就存于索引了，然而，key一旦删除就不可见了。所以，一旦key处于未提交的删除态，我们就要对还存在的key加上锁告诉其他事务这边有一个未提交的删除（比如，在获取锁上的冲突）。该锁通过在跳跃点后构建一堵墙，从而隐藏了这个待删除的节点，这样就能阻止其他事务访问这个节点。构建这样一堵墙，使得其他事务得知该key并不存在，但实际上该key仍然处于未提交的删除态，并且该删除可以随时回滚。在插入时，新插入的key作为一个跳跃点，然后对删除而言，跳跃点得是一个稳定的节点（不会被其他事务删除）。读者现在应该意识到是怎么一回事了，[Moha90a]中有很多关于此的例子的讨论。  
  
 **3. Recovery in ARIES/IM**  
 恢复的逻辑和ARIES中类似，我们已经在1.2小节中简要说明了。在本节中，我们着重讨论对索引组件的恢复。我们会阐述在之前小节中提到的并行控制策略会受到恢复策略的影响。有一些问题需要认真考虑和分析，并找出解决方案。  
@@ -148,7 +150,7 @@ Restart Undo Considerations：为了确保在重启回滚是，在索引树中�
 
 如果一个页在t1时刻执行了一次操作可能会导致以上四种在t2时刻undo的问题，那么对于该页做任何操作时（在t1,t2时刻之间）需要执行一个预防操作，因此强制要求先前日志的undo在重启undo的时候重新遍历树。图11描述了这样一个场景：在T2插入到P6时，接着，T1在P6上删除，T2就需要采取预防措施这样，如果T1在P6上的删除在后来回滚了，接着T1就需要执行一次逻辑undo,这样T1就不会遇到索引树不一致的问题，因为它不会直接访问其叶子节点。预防步骤首先确保到达了point of structural consistency (POSC），通过在执行操作前加树s latch（比如，T2在执行它对P6上的插入前建立了POSC，并使用了T1是否的空闲空间）。这就确保了，如果系统崩溃了，在undo遍历的时候会到达POSC（如果有需要的话），树就肯定是一致的了。只有当一些在POSC之前的事务需要回滚时，undo遍历才会访问POSC之前的部分日志。  
 
-即使要增删的key的叶子节点与未完成的SMO无关（比如，该叶子页上的SM_Bit为‘0’），这样的操作可能会被延迟。如果SMO在树中的其他地方传播，直到SMO完成（参见图11对这个问题的图示说明）。这种延迟是有必要的，只有当系统崩溃在增删key完成之后，并且在增删事务提交之前，这会导致在undo增删时从索引树根遍历。在这些情况下，需要保证索引树是一致的，并且可以遍历。We call as the region of structural hcomktency (ROSI) that portion of the log from the point at which the first SMO related log record is written (indicated by the symbol [) to the point at which the dummy CLR for that SMO is written (indicated by the symbol ]).在这个区间内，如果有其他事务对索引操作需要写日志记录下来，然后我们要确保，这些操作可以以面向页的方式undo。如果我们不能确保是否需要逻辑undo，在系统恰好崩溃在执行该动作，并日志记录下来了，那么我们就需要延迟该操作，等到ROSI结束并建立一个POSC。  
+即使要增删的key的叶子节点与未完成的SMO无关（比如，该叶子页上的SM_Bit为‘0’），这样的操作可能会被延迟。如果SMO在树中的其他地方传播，直到SMO完成（参见图11对这个问题的图示说明）。这种延迟是有必要的，只有当系统崩溃在增删key完成之后，并且在增删事务提交之前，这会导致在undo增删时从索引树根遍历。在这些情况下，需要保证索引树是一致的，并且可以遍历。我们称这种这种日志中第一条SMO日志记录（标识为‘[’）开始，到写入这个SMO的dummy CLR为止（标识为']'），这段日志区间称为region of structural inconsistency (ROSI)。在这个区间内，如果有其他事务对索引操作需要写日志记录下来，然后我们要确保，这些操作可以以面向页的方式undo。如果我们不能确保是否需要逻辑undo，在系统恰好崩溃在执行该动作，并日志记录下来了，那么我们就需要延迟该操作，等到ROSI结束并建立一个POSC。  
 
 考虑到上述四种的(重启时需要undo遍历索引树)第一种情况,ARIES/IM在每页上使用一个bit位，叫做Delete_Bit。如果该bit被某事务设置成‘1’，并对叶子页执行key删除（参见图7）。当尝试往一个Delete_Bit为‘1’的叶子页插入key是，ARIES/IM首先确保在插入之前没有SMO(参见图6)。在图11的例子中，T2意识到Delete_Bit是‘1’，因此在重置Delete_Bit为‘0’前，会先建立一个POSC，然后在执行插入。这样，在T2提交之后系统崩溃了，然后T1需要回滚，由于T2建立的POSC，于是防止T1进入不一致树的状态。另一种方案是：使用一个类似于Delete_Bit来标识上述的状态,只有当整个树中没有SMO操作时，才可以执行delete(并记录日志)。我们并没有选择这样做，因为这会导致很多不必要的同步和降低并发性。不必要的同步所花费的时间将更为显著，需要使用树锁而不是树latch,这样才能保证SMO的并行性（参见第5节 总结）。获取和释放latch需要消耗10几个指令，而获取和释放锁需要消耗上百个指令，即使在没有冲突的时候。如果树latch变成全局范围的锁，在共享磁盘环境中会更加糟糕，会消耗上千个指令。  
 
