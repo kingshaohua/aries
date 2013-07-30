@@ -5,7 +5,7 @@ wharr@alnwden, tbm. com
 FRANK LEVINE  
 IBM, 11400 Burnet Road, Austin, TX 78758, USA  
 
-摘要：本文提供了一种对于事务系统中索引管理的综合处理方案。这种方案叫做ARIES/IM(Algorlthm for Recovery and isolation Exploiting Semantics for Index Management),可以进行并发控制和B+树的恢复。ARIES/IM确保串行性并使用WAL来恢复。它支持高并发并且有性能优异：  
+摘要：本文提供了一种对于事务系统中索引管理的综合处理方案。这种方案叫做ARIES/IM(Algorlthm for Recovery and isolation Exploiting Semantics for Index Management),可以进行并发控制和B+树的恢复。ARIES/IM确保串行性并使用WAL来恢复。它支持高并发并且性能优异：  
 （1）将某个key上的锁视为数据页中相应记录的锁（比如在记录级别）  
 （2）为了支持高并发，在提交时不获取索引页锁，即使这时候索引结构发生了变更（SMO）比如页分裂，页删除。  
 （3）支持在遍历，插入，删除同时，进行SMO。  
@@ -16,6 +16,7 @@ IBM, 11400 Burnet Road, Austin, TX 78758, USA
 对B树及其变种的并发访问协议已经研究了好长时间(参见 [BaSc77, LeYa81, Mino84, Sagi86, ShGo88]及其它们所引用的一些文章）。这些论文中都没有考虑的如何保证事务的原子性和串行性，该事务包含了对B+树的多种操作（比如获取，插入，删除等）,当事务，系统，或者介质崩溃，并且被不同事务同时访问。[FuKa89]描述了一种错误的（比如：在not found的时候不完全锁，对于范围扫描时进行完全加锁）并且昂贵（使用嵌套事务）的方案来解决此类问题（详情参考[MoLe89]）。数据库管理系统（DBMS）比如[DB21,the 0S12 Extended Edition Database Managerl, System R,NonStop SQLt and SQUDS]的索引管理都支持串行化（重复读（RR）或者第三级别的一致性[Gray78]）。在恢复时，DB2, NonStop SQL 和  0S/2 Extended Edition Database Manager 使用日志先行（WAL）[Gray78,MHLPS92],而System R 和 SQL/DS使用影子页技术[GM BLL81]。不幸的是，上述系统所使用算法细节并没不公开。本文中，我们会描述一种并发控制及恢复策略，称为ARIES/IM（A/gorithm for Recovery and Isolation Exploiting Semantics forindex Management),来构建B+树索引。我们使用ARIES/IM作为0S/2 Extended Edition Database Manager设计的一部分。  
 
 首先，System R如何对索引加锁的大部分细节已经在[Moha90a]中详细描述，并且作为我们ARIES/KVL的一部分，用来改进该方法的并行度和加锁开销特性。除了提供低颗粒度锁（通过数据的记录锁和索引的key值锁），System R系统（起源于IBM的SQL/DS产品）锁提供的并发级别，客户并不满意的。由于，ARIES/KVL是在key值上加锁而不是在单独的key上加锁，所以ARIES/KVL对于增强并发度仍然不够。后者在非唯一性索引上有重大改进。此外，在System R中，即使是对单条记录的插入或删除所要获取的锁数量也是相当多的。因此在设计ARIES/IM是，我们的首要目标是修改System R算法，使其使用WAL，并且彻底提升了它的并发度，性能和功能特性。需要通过高效的恢复和存储以及高并发来支持串行执行。ARIES/IM可以满足所有这些要求。  
+
 ARIES/IM是基于ARIES的恢复和并行控制策略，这在[MH LPS92]中有介绍，并且在众多产品中不同程度的实现了它，比如：IBM的产品0S/2 Extended Edition Database Manager,Workstation Data Save FacilityA/M 和 DB2 V2,IBM的研究原型系统Starburst 和 QuickSilver，以及Transarc的Encinai产品套装，Wisconsin大学的 Gamma data base machine 和 EXODUS 可扩展DBMS。在ARIES/IM中，以极少的锁提供了高度的并发性。通过高效的执行undo和redo以及在undo时避免死锁，来提升重启恢复和正常执行时的性能。我们的并发度测量在[KuPa79]中有明确的定义，它陈述：一系列事务运行相交的事务越多，它们的并行度越高。我们的性能测量就是所需要获取的锁数量，在redo,undo过程中访问的页数量，以及正常操作数，在介质恢复时所需要遍历日志的次数，所需要同步的数据页数，以及日志IO。  
 
 ![](./img/fig1.png)  
@@ -58,7 +59,7 @@ ARIES/IM支持4中基本的索引操作：
 **2.Concurrency Control in ARIES/IM**  
 本节中，我们会描述ARIES/IM一些特性，用在并行控制方面的。首先我们会给出一个大体上的概述，然后在详细论述不同索引操作下的特性。ARIES/IM的这些特性是为了能在恢复时正确执行（在第三节有描述）。系统恢复会要求在并行执行一些特定操作时添加一些限制。详细请参考[MoLe89].  
 
-**2.1. Overview oJLocking and Latching**  
+**2.1. Overview of Locking and Latching**  
 如图2所示，总结了不同操作下所需要的锁。  
 ![](./img/fig2.png)  
 
@@ -67,18 +68,18 @@ ARIES/IM支持高度的并发以及良好的性能：
 （2）为了支持高并发，在提交时不获取索引页锁，即使这时候索引结构发生了变更（SMO）比如页分裂，页删除。  
 （3）支持在遍历，插入，删除同时，进行SMO。  
 
-ARIES/IM通过锁住一条记录来锁住key(这条记录的record id在这个key中，或者数据页ID--record id的一部分，如果锁颗粒度是页级别的)。一个锁如果真的锁住包含这个key的数据块，我们称这个锁为data-only锁。相对应的就是key-value锁，用在System R和ARIES/KVL[Moha90a]中，以及索引页锁，用在DB2和System R(使用页锁)。我们称之为index-specific锁。实际上，ARIES/IM很容易改造成是用index-specific锁，现对于data-only锁并发度更高，但是会带来额外的锁开销（参见[MoLe89]）。若使用data-only锁，在删除和插入key时，当前的key不会被索引管理组件显示锁住，因为记录管理组件可能已经锁住相应的记录（在数据页操作阶段使用提交段的X锁）。只有在是用index-specific锁时，索引管理组件才会对删除和插入key加显示锁。因为在使用data-only锁是，在调用fetch和fetch next时，索引组件锁住当前key，遍历该数据页中的下一条记录，就不需要锁住相应的记录。显然，如果使用index-specific锁，记录组件就需要锁住相应的记录了。  
+ARIES/IM通过锁住一条记录来锁住key(这条记录的record id在这个key中，或者数据页ID--record id的一部分，如果锁颗粒度是页级别的)。一个锁如果真的锁住包含这个key的数据块，我们称这个锁为data-only锁。相对应的就是key-value锁，用在System R和ARIES/KVL[Moha90a]中，以及索引页锁，用在DB2和System R(使用页锁)。我们称之为index-specific锁。实际上，ARIES/IM很容易改造成使用index-specific锁，现对于data-only锁并发度更高，但是会带来额外的锁开销（参见[MoLe89]）。若使用data-only锁，在删除和插入key时，当前的key不会被索引管理组件显式锁住，因为记录管理组件可能已经锁住相应的记录（在数据页操作阶段使用提交段的X锁）。只有在是用index-specific锁时，索引管理组件才会对删除和插入key加显式锁。因为在使用data-only锁时，在调用fetch和fetch next时，索引组件锁住当前key，遍历该数据页中的下一条记录，就不需要锁住相应的记录。显然，如果使用index-specific锁，记录组件就需要锁住相应的记录了。  
 
 ![](./img/fig3.png)  
 
 在插入或删除key时，会锁住索引的下一个key来这次RR(这样就解决了幻读问题)，并且这样也能保证在唯一性索引中，不会出现多个key有相同的key值的情况（因为事务回滚的原因，参见2.4小节insert和2.5小节delete）。同样在fetch或者fetch next操作，为了保证RR，如果当前的key不是想要的key，也会锁住下一个key（参见2.2节Fetch和2.3节Fetch Next）.  
 
-Latching。当遍历索引树来执行各种操作时，只使用页latch来保证信息的物理一致性。这减少了需要获取锁的数量，并且提高了并发的性能。在任意时刻只会latch一个索引页。为了提高并发度，并且避免latch的死锁，即使还没有获取到latch，因为要等待获取锁（锁并不是刻意立刻获取到的）。在索引访问的时候，不需要获取数据页latch 。当遍历索引树时会用到latch coupling--比如，latch住了父页，再请求子页的latch。所以遍历索引树的步骤如下：  
+**Latching**。当遍历索引树来执行各种操作时，只使用页latch来保证信息的物理一致性。这减少了需要获取锁的数量，并且提高了并发的性能。在任意时刻只会latch一个索引页。为了提高并发度，并且避免latch的死锁，即使还没有获取到latch，因为要等待获取锁（锁并不是刻意立刻获取到的）。在索引访问的时候，不需要获取数据页latch 。当遍历索引树时会用到latch coupling--比如，latch住了父页，再请求子页的latch。所以遍历索引树的步骤如下：  
 （1）S latch住根节点，并当它为当前页。  
 （2）检测当前页，判断子页是否已经被latch住，然后是子页为当前页。如果当前页不是叶子节点，S latch住它，unlatch其父节点，重复步骤2。如果当前页是叶子节点，X(或者S) latch住它，如果对key的操作是insert/delete（或者fetch/fetch next）   
 接着，会对上述逻辑添加一些校验来预防一些其他事务的并行操作导致的问题（SMO等等）。  
 
-Structure Modification Operations。如果需要SMO（页分裂或删除），会由同一个事务执行它，这和其他方法里不同[Sagi86, ShGo88]。当一个事务分裂了某页，在它提交这个分裂动作之前，其他事务就可以读这个页，甚至修改这个页。为了提高并行度，SMO的影响是在树中以自底向上传播。（比如，从叶子节点到非叶子节点），除了安全节点（页）（参见[BaSc77]）。为了避免latch的死锁，低级别的页的latch会在高级别的页被latch和修改之前释放。这个叶子页可能会使得遍历者访问前后不一致的树（参见图3）。对于该设计的基本原理会在[MoLe89]中有详细论述。Splits are done to the “right”。也就是说，相对大的key值会被移动到新页上。变成空页的的页会从树中移除掉。这就保证了，在SMO都结束后，索引中还有空页的情况（SM_Bit(参见下面)为0，这样该页就可以从索引页的根部进行访问）。为了避免某个事务的SMO和其他事务的一些操作有交叉（参见图3），ARIES/IM会这么处理：对于一个索引树上的SMO会串行执行，通过对这个索引树加X latch。  
+**Structure Modification Operations**。如果需要SMO（页分裂或删除），会由同一个事务执行它，这和其他方法里不同[Sagi86, ShGo88]。当一个事务分裂了某页，在它提交这个分裂动作之前，其他事务就可以读这个页，甚至修改这个页。为了提高并行度，SMO的影响是在树中以自底向上传播。（比如，从叶子节点到非叶子节点），除了安全节点（页）（参见[BaSc77]）。为了避免latch的死锁，低级别的页的latch会在高级别的页被latch和修改之前释放。这个叶子页可能会使得遍历者访问前后不一致的树（参见图3）。对于该设计的基本原理会在[MoLe89]中有详细论述。Splits are done to the “right”。也就是说，相对大的key值会被移动到新页上。变成空页的的页会从树中移除掉。这就保证了，在SMO都结束后，索引中还有空页的情况（SM_Bit(参见下面)为0，这样该页就可以从索引页的根部进行访问）。为了避免某个事务的SMO和其他事务的一些操作有交叉（参见图3），ARIES/IM会这么处理：对于一个索引树上的SMO会串行执行，通过对这个索引树加X latch。  
 
 某个事务在对叶子级别执行SMO时会获取索引树的X latch，并且一直持有到SMO的影响在索引树中传播完毕。由于SMO是在叶子级别执行，并传播到整个树中，在每个页中会有一个bit,称之为SM_Bit，会被设置成‘1’,用来提醒其他事务正在执行SMO。使用SM_Bit来避免一些问题：比如因为执行未完全的SMO，而插入了错误的页。只有当SMO执行完毕后，SM_Bit就会重置为‘0’。  
 
